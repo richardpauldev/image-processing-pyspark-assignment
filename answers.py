@@ -1,8 +1,9 @@
+# Import necessary libraries
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import udf
-from pyspark.sql.types import BinaryType
-from PIL import Image
+from pyspark.sql.functions import udf, col
+from pyspark.sql.types import BinaryType, DoubleType, ArrayType, IntegerType
 import numpy as np
+from PIL import Image
 import io
 
 # Initialize a SparkSession
@@ -49,66 +50,76 @@ def load_cifar10_batch(file):
     
     return images_and_labels
 
-# UDF to resize images
-def resize_image(image_data, size=(224, 224)):
+# Example path to a CIFAR-10 batch file (update this path to your CIFAR-10 batch file location)
+cifar10_batch_file = "cifar-10-batches-py/data_batch_1"
+
+# Load a CIFAR-10 batch
+images_and_labels = load_cifar10_batch(cifar10_batch_file)
+
+# Convert the list of tuples into a DataFrame
+schema = ["image_data", "label"]
+df = spark.createDataFrame(images_and_labels, schema=schema)
+
+# Show the schema of the DataFrame
+df.printSchema()
+
+# Completed Code: 
+# Task 1: Image Resizing
+def resize_image(image_data, size=(64, 64)):
     """
     Resizes an image to the specified size.
     
     Args:
-    - image_data (bytearray): The image data in bytes.
+    - image_data (binary): The original image data.
     - size (tuple): The target size (width, height).
     
     Returns:
-    - bytearray: The resized image data.
+    - binary: The resized image data.
     """
-    # Open the image using PIL
+    # Convert binary data to PIL Image
     image = Image.open(io.BytesIO(image_data))
-    # Resize the image
+    # Resize image
     resized_image = image.resize(size)
-    # Convert the resized image to bytes
+    # Convert back to binary
     img_byte_arr = io.BytesIO()
     resized_image.save(img_byte_arr, format='PNG')
     return img_byte_arr.getvalue()
 
-# UDF to normalize images
+resize_udf = udf(resize_image, BinaryType())
+df_resized = images_and_labels.withColumn("resized_image_data", resize_udf("image_data"))
+
+# Task 2: Image Normalization
 def normalize_image(image_data):
     """
-    Normalizes pixel values in the image to be between 0 and 1.
+    Normalizes an image so that its pixel values have mean 0 and std 1.
     
     Args:
-    - image_data (bytearray): The image data in bytes.
+    - image_data (binary): The image data.
     
     Returns:
-    - bytearray: The normalized image data.
+    - binary: The normalized image data.
     """
-    # Open the image using PIL
+    # Convert binary data to PIL Image
     image = Image.open(io.BytesIO(image_data))
-    # Convert the image to a numpy array
-    image_array = np.array(image)
-    # Normalize the image array
-    normalized_image_array = image_array.astype(np.float32) / 255.0
-    # Convert the numpy array back to an image
-    normalized_image = Image.fromarray((normalized_image_array * 255).astype(np.uint8))
-    # Convert the normalized image to bytes
+    # Convert image to numpy array
+    img_array = np.array(image)
+    # Normalize
+    normalized_img_array = (img_array - np.mean(img_array)) / np.std(img_array)
+    # Ensure the normalized array still has values between 0 and 255
+    normalized_img_array = ((normalized_img_array - normalized_img_array.min()) / (normalized_img_array.max() - normalized_img_array.min()) * 255).astype(np.uint8)
+    # Convert numpy array back to PIL Image
+    normalized_image = Image.fromarray(normalized_img_array)
+    # Convert back to binary
     img_byte_arr = io.BytesIO()
     normalized_image.save(img_byte_arr, format='PNG')
     return img_byte_arr.getvalue()
 
-# Register the UDFs
-resize_image_udf = udf(resize_image, BinaryType())
-normalize_image_udf = udf(normalize_image, BinaryType())
+normalize_udf = udf(normalize_image, BinaryType())
+df_normalized = df_resized.withColumn("normalized_image_data", normalize_udf("resized_image_data"))
 
-# Assuming df is your DataFrame containing the image data
-# Apply the resize and normalize UDFs
-df = df.withColumn("resized_image", resize_image_udf("image_data"))
-df = df.withColumn("normalized_image", normalize_image_udf("resized_image"))
-
-# Show the updated DataFrame schema
-df.printSchema()
-
-# Note: The actual DNN model training and prediction would typically occur outside of PySpark,
-# using a deep learning library such as TensorFlow or PyTorch. This preprocessing prepares the
-# image data for such use.
+# Task 3: Label Distribution Analysis
+label_distribution = df_normalized.groupBy("label").count().orderBy("count", ascending=False)
+label_distribution.show()
 
 # Stop the SparkSession
 spark.stop()

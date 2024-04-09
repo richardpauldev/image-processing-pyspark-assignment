@@ -1,7 +1,7 @@
 # Import necessary libraries
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import udf
-from pyspark.sql.types import ArrayType, IntegerType
+from pyspark.sql.functions import udf, col
+from pyspark.sql.types import BinaryType, DoubleType, ArrayType, IntegerType
 import numpy as np
 from PIL import Image
 import io
@@ -63,7 +63,7 @@ df = spark.createDataFrame(images_and_labels, schema=schema)
 # Show the schema of the DataFrame
 df.printSchema()
 
-# Note: Further processing and analysis steps will be added by students as part of the assignment.
+# TODO: Implement tasks 1,2,3 as described in the README
 
 # Stop the SparkSession
 spark.stop()
