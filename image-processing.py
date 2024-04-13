@@ -62,6 +62,7 @@ df = spark.createDataFrame(images_and_labels, schema=schema)
 
 # Show the schema of the DataFrame
 df.printSchema()
+df.show(5)
 
 # TODO: Implement tasks 1,2,3 as described in the README
 

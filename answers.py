@@ -1,6 +1,6 @@
 # Import necessary libraries
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import udf, col
+from pyspark.sql.functions import udf, col, desc
 from pyspark.sql.types import BinaryType, DoubleType, ArrayType, IntegerType
 import numpy as np
 from PIL import Image
@@ -60,66 +60,73 @@ images_and_labels = load_cifar10_batch(cifar10_batch_file)
 schema = ["image_data", "label"]
 df = spark.createDataFrame(images_and_labels, schema=schema)
 
-# Show the schema of the DataFrame
-df.printSchema()
+# TASK 1
 
-# Completed Code: 
-# Task 1: Image Resizing
-def resize_image(image_data, size=(64, 64)):
+# Function to resize images to 64x64 pixels
+def resize_image(image_bytes):
     """
-    Resizes an image to the specified size.
+    Resize the given image to 64x64 pixels.
     
     Args:
-    - image_data (binary): The original image data.
-    - size (tuple): The target size (width, height).
+    - image_bytes (bytes): The original image in byte format.
     
     Returns:
-    - binary: The resized image data.
+    - bytes: The resized image in byte format.
     """
-    # Convert binary data to PIL Image
-    image = Image.open(io.BytesIO(image_data))
-    # Resize image
-    resized_image = image.resize(size)
-    # Convert back to binary
+    image = Image.open(io.BytesIO(image_bytes))
+    resized_image = image.resize((64, 64), Image.ANTIALIAS)
     img_byte_arr = io.BytesIO()
     resized_image.save(img_byte_arr, format='PNG')
     return img_byte_arr.getvalue()
 
-resize_udf = udf(resize_image, BinaryType())
-df_resized = images_and_labels.withColumn("resized_image_data", resize_udf("image_data"))
+# Register the UDF
+resize_image_udf = udf(resize_image, BinaryType())
 
-# Task 2: Image Normalization
-def normalize_image(image_data):
+# Resize images in the DataFrame
+df = df.withColumn("image_data", resize_image_udf(col("image_data")))
+
+# TASK 2
+
+def normalize_image(image_bytes):
     """
-    Normalizes an image so that its pixel values have mean 0 and std 1.
+    Normalize the pixel values of an image so that it has a mean of 0 and a standard deviation of 1.
     
     Args:
-    - image_data (binary): The image data.
+    - image_bytes (bytes): The image in byte format.
     
     Returns:
-    - binary: The normalized image data.
+    - bytes: The normalized image in byte format.
     """
-    # Convert binary data to PIL Image
-    image = Image.open(io.BytesIO(image_data))
-    # Convert image to numpy array
-    img_array = np.array(image)
-    # Normalize
-    normalized_img_array = (img_array - np.mean(img_array)) / np.std(img_array)
-    # Ensure the normalized array still has values between 0 and 255
-    normalized_img_array = ((normalized_img_array - normalized_img_array.min()) / (normalized_img_array.max() - normalized_img_array.min()) * 255).astype(np.uint8)
-    # Convert numpy array back to PIL Image
-    normalized_image = Image.fromarray(normalized_img_array)
-    # Convert back to binary
+    image = Image.open(io.BytesIO(image_bytes))
+    np_image = np.array(image).astype(float)
+    mean = np_image.mean()
+    std = np_image.std()
+    normalized_image = (np_image - mean) / std
+    normalized_image = np.clip(normalized_image, -1, 1)  # Clip values to prevent overflow in uint8
+    normalized_image = (255 * (normalized_image - normalized_image.min()) / (normalized_image.max() - normalized_image.min())).astype(np.uint8)
     img_byte_arr = io.BytesIO()
-    normalized_image.save(img_byte_arr, format='PNG')
+    Image.fromarray(normalized_image).save(img_byte_arr, format='PNG')
     return img_byte_arr.getvalue()
 
-normalize_udf = udf(normalize_image, BinaryType())
-df_normalized = df_resized.withColumn("normalized_image_data", normalize_udf("resized_image_data"))
+# Register the UDF
+normalize_image_udf = udf(normalize_image, BinaryType())
 
-# Task 3: Label Distribution Analysis
-label_distribution = df_normalized.groupBy("label").count().orderBy("count", ascending=False)
-label_distribution.show()
+# Resize images in the DataFrame
+df = df.withColumn("image_data", normalize_image_udf(col("image_data")))
+
+# TASK 3
+label_count = df.groupBy("label").count().orderBy("count")
+
+most_common = label_count.orderBy(desc("count")).first()
+least_common = label_count.orderBy("count").first()
+
+label_count.show()
+print(f"The most common category is label {most_common['label']} with {most_common['count']} images.")
+print(f"The least common category is label {least_common['label']} with {least_common['count']} images.")
+
+# Show the schema of the DataFrame
+df.printSchema()
+df.show(5)
 
 # Stop the SparkSession
 spark.stop()
