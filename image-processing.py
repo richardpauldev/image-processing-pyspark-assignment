@@ -2,7 +2,7 @@
 from pyspark.ml.linalg import Vectors, VectorUDT
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import udf, col
-from pyspark.sql.types import BinaryType, DoubleType, ArrayType, IntegerType, FloatType
+from pyspark.sql.types import BinaryType, DoubleType, ArrayType, IntegerType, FloatType, StructField, StructType
 import numpy as np
 from PIL import Image
 import io
@@ -65,26 +65,27 @@ batch_files = [
     "cifar-10-batches-py/test_batch"
 ]
 
-# Process all batches into a single DataFrame
-df = spark.createDataFrame([(load_cifar10_batch(f)) for f in batch_files], ["image_data", "label"])
+image_data_schema = StructType([
+    StructField("image_data", BinaryType(), False),
+    StructField("label", IntegerType(), False)
+])
 
-# Show the schema of the DataFrame
-# df.printSchema()
-# df.show(5)
+# all_images_and_labels = [image_label for file in batch_files for image_label in load_cifar10_batch(file)]
+# rdd = spark.sparkContext.parallelize(all_images_and_labels)
+# df = spark.createDataFrame(rdd, image_data_schema)
 
-# TODO: Implement tasks 1,2,3 as described in the README
+def create_dataframe_from_batch(file):
+    images_and_labels = load_cifar10_batch(file)
+    rdd = spark.sparkContext.parallelize(images_and_labels)
+    return spark.createDataFrame(rdd, image_data_schema)
 
-from PIL import ImageOps
-
-# UDF to horizontally flip an image
-def horizontal_flip(image_bytes):
-    image = Image.open(io.BytesIO(image_bytes))
-    flipped_image = ImageOps.mirror(image)
-    img_byte_arr = io.BytesIO()
-    flipped_image.save(img_byte_arr, format='PNG')
-    return img_byte_arr.getvalue()
-
-flip_udf = udf(horizontal_flip, BinaryType())
+df = None
+for batch_file in batch_files:
+    batch_df = create_dataframe_from_batch(batch_file)
+    if df is None:
+        df = batch_df
+    else:
+        df.union(batch_df)
 
 # Define a UDF that converts image byte data into a dense vector
 def convert_bytes_to_vector(image_bytes):
@@ -94,22 +95,9 @@ def convert_bytes_to_vector(image_bytes):
 
 convert_udf = udf(convert_bytes_to_vector, VectorUDT())
 
+df = df.withColumn("features", convert_udf("image_data"))
 
 train_df, test_df = df.randomSplit([0.8, 0.2], seed=42)
-
-train_df = train_df.withColumn("flipped_image_data", flip_udf(col("image_data")))
-
-train_df = train_df \
-    .withColumn("features", convert_udf("image_data")) \
-    .withColumn("flipped_features", convert_udf("flipped_image_data"))
-
-train_augmented_df = train_df.selectExpr("features", "label").union(
-    train_df.selectExpr("flipped_features as features", "label")
-)
-
-test_df = test_df \
-    .withColumn("features", convert_udf("image_data"))
-
 
 from pyspark.ml.classification import RandomForestClassifier
 from pyspark.ml import Pipeline
