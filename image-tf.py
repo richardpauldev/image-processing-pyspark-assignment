@@ -6,6 +6,14 @@ from pyspark.sql.types import BinaryType, DoubleType, ArrayType, IntegerType, Fl
 import numpy as np
 from PIL import Image
 import io
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense
+from sparkdl import KerasImageFileTransformer
+
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # This tells TensorFlow to use only the CPU
+
 
 # Initialize a SparkSession
 spark = SparkSession.builder \
@@ -55,6 +63,19 @@ def load_cifar10_batch(file):
     
     return images_and_labels
 
+def keras_model():
+    model = Sequential([
+        Conv2D(32, kernel_size=(3,3), activation='relu', input_shape=(32,32,3)),
+        MaxPooling2D(pool_size=(2,2)),
+        Conv2D(64, kernel_size=(3,3), activation='relu'),
+        MaxPooling2D(pool_size=(2,2)),
+        Flatten(),
+        Dense(128, activation='relu'),
+        Dense(10, activation='softmax')
+    ])
+    model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
+    return model
+
 # Paths to the CIFAR-10 batch files
 batch_files = [
     "cifar-10-batches-py/data_batch_1",
@@ -65,66 +86,24 @@ batch_files = [
     "cifar-10-batches-py/test_batch"
 ]
 
+def PIL_image_loader(path):
+    """ Load an image file into a 3D Numpy array. """
+    img = Image.open(path)
+    img = img.resize((32, 32))
+    arr = np.array(img).astype(np.float32)
+    # Normalize to [0, 1]
+    arr /= 255.0
+    return arr
+
 # Process all batches into a single DataFrame
 df = spark.createDataFrame([(load_cifar10_batch(f)) for f in batch_files], ["image_data", "label"])
 
-# Show the schema of the DataFrame
-# df.printSchema()
-# df.show(5)
+transformer = KerasImageFileTransformer(inputCol="image_data", outputCol="predictions", model=keras_model, imageLoader=PIL_image_loader, outputMode="vector")
 
-# TODO: Implement tasks 1,2,3 as described in the README
+df = transformer.transform(df)
 
-from PIL import ImageOps
+df.select("predictions").show(5)
 
-# UDF to horizontally flip an image
-def horizontal_flip(image_bytes):
-    image = Image.open(io.BytesIO(image_bytes))
-    flipped_image = ImageOps.mirror(image)
-    img_byte_arr = io.BytesIO()
-    flipped_image.save(img_byte_arr, format='PNG')
-    return img_byte_arr.getvalue()
-
-flip_udf = udf(horizontal_flip, BinaryType())
-
-# Define a UDF that converts image byte data into a dense vector
-def convert_bytes_to_vector(image_bytes):
-    image = Image.open(io.BytesIO(image_bytes))
-    array =  np.array(image).flatten().astype(float) / 255.0
-    return Vectors.dense(array)
-
-convert_udf = udf(convert_bytes_to_vector, VectorUDT())
-
-
-train_df, test_df = df.randomSplit([0.8, 0.2], seed=42)
-
-train_df = train_df.withColumn("flipped_image_data", flip_udf(col("image_data")))
-
-train_df = train_df \
-    .withColumn("features", convert_udf("image_data")) \
-    .withColumn("flipped_features", convert_udf("flipped_image_data"))
-
-train_augmented_df = train_df.selectExpr("features", "label").union(
-    train_df.selectExpr("flipped_features as features", "label")
-)
-
-test_df = test_df \
-    .withColumn("features", convert_udf("image_data"))
-
-
-from pyspark.ml.classification import RandomForestClassifier
-from pyspark.ml import Pipeline
-
-rf = RandomForestClassifier(featuresCol="features", labelCol="label", numTrees=10)
-
-pipeline = Pipeline(stages=[rf])
-
-model = pipeline.fit(train_df)
-
-from pyspark.ml.evaluation import MulticlassClassificationEvaluator
-
-evaluator = MulticlassClassificationEvaluator(labelCol="label", predictionCol="prediction", metricName="accuracy")
-accuracy = evaluator.evaluate(model.transform(test_df))
-print(f"Accuracy: {accuracy}")
 
 # Stop the SparkSession
 spark.stop()
